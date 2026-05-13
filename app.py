@@ -7,7 +7,6 @@ st.title("🛣️ Procesador Vial Dynatest Mark III")
 st.markdown("Automatización de inventarios de rugosidad con auditoría de singularidades.")
 
 def procesar_streamlit(uploaded_file, ruta, sentido, intervalo_str, umbral_puntual, max_puente_m):
-    # (Toda la lógica de lectura, fechas y GPS va aquí igual que en Colab)
     data_iri, data_gps, data_eventos = [], [], []
     fecha_registro = "Sin Fecha"
     lineas = uploaded_file.getvalue().decode('latin-1').splitlines()
@@ -33,10 +32,11 @@ def procesar_streamlit(uploaded_file, ruta, sentido, intervalo_str, umbral_puntu
 
     eventos_tramo = ['P', 'O']
     eventos_puntuales = ['G', 'L', 'S', 'B']
+    eventos_objetivo = eventos_tramo + eventos_puntuales
     
-    auditoria = {'rebotes': 0, 'puentes': 0, 'obras': 0, 'alertas': []}
+    auditoria = {'rebotes': 0, 'puentes': 0, 'obras': 0, 'alertas': [], 'detalle_rebotes': {}}
 
-    # 1. FILTRO CON MEMORIA
+    # 1. FILTRO CON MEMORIA E INDIFERENCIA
     if not df_evt_raw.empty:
         u_puntual = umbral_puntual / 1000.0
         u_tramo = 0.005 
@@ -44,16 +44,25 @@ def procesar_streamlit(uploaded_file, ruta, sentido, intervalo_str, umbral_puntu
         memoria = {}
         for _, row in df_evt_raw.iterrows():
             letra, prog = row['Evento'], row['Progresiva']
+            
+            if letra not in eventos_objetivo:
+                evt_validos.append(row)
+                continue
+
             umbral = u_tramo if letra in eventos_tramo else u_puntual
+            
             if letra not in memoria:
                 evt_validos.append(row); memoria[letra] = prog
             else:
                 dist = prog - memoria[letra]
                 if dist > umbral:
                     evt_validos.append(row); memoria[letra] = prog
-                else: auditoria['rebotes'] += 1
+                else: 
+                    auditoria['rebotes'] += 1
+                    auditoria['detalle_rebotes'][letra] = auditoria['detalle_rebotes'].get(letra, 0) + 1
         df_evt = pd.DataFrame(evt_validos)
-    else: df_evt = df_evt_raw
+    else: 
+        df_evt = df_evt_raw
 
     # SINCRONIZAR
     df_final = pd.merge_asof(df_iri, df_gps, on='Progresiva', direction='nearest').drop_duplicates('Progresiva')
@@ -122,31 +131,40 @@ with st.form("form_main"):
         with col_a: umbral_rebote = st.number_input("Umbral Anti-rebote (m)", 0, 100, 30)
         with col_b: limite_puente = st.number_input("Límite max. Puente (m)", 100, 2000, 800)
 
-    if st.form_submit_button("Procesar Datos") and arc and rut:
-        with st.spinner('Aplicando algoritmos de exclusión...'):
-            df_cru, df_agr, audit = procesar_streamlit(arc, rut, sen, int_rep, umbral_rebote, limite_puente)
-            
-            if df_cru is not None:
-                # REPORTE DE AUDITORÍA VISUAL
-                st.subheader("📊 Reporte de Auditoría")
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Puentes Procesados", audit['puentes'])
-                m2.metric("Obras Procesadas", audit['obras'])
-                m3.metric("Rebotes Filtrados", audit['rebotes'])
-                
-                if audit['alertas']:
-                    for al in audit['alertas']:
-                        if "🔴" in al: st.error(al)
-                        else: st.warning(al)
-                else:
-                    st.success("✅ Tramos lógicos consistentes. Sin alertas de desfase.")
+    # Capturamos el botón aquí adentro
+    submit_btn = st.form_submit_button("Procesar Datos")
 
-                # DESCARGAS
-                st.markdown("---")
-                col_d1, col_d2 = st.columns(2)
-                nb = arc.name.split('.')[0]
-                with col_d1:
-                    st.download_button("⬇️ Descargar Crudo (SIG)", data=df_cru.to_csv(index=False).encode('utf-8'), file_name=f"{nb}_crudo.csv", mime='text/csv')
-                if df_agr is not None:
-                    with col_d2:
-                        st.download_button(f"⬇️ Descargar Resumen ({int_rep}m)", data=df_agr.to_csv(index=False).encode('utf-8'), file_name=f"{nb}_resumen.csv", mime='text/csv')
+# Todo el procesamiento visual y de descargas está aquí afuera para evitar el error
+if submit_btn and arc and rut:
+    with st.spinner('Aplicando algoritmos de exclusión...'):
+        df_cru, df_agr, audit = procesar_streamlit(arc, rut, sen, int_rep, umbral_rebote, limite_puente)
+        
+        if df_cru is not None:
+            # REPORTE DE AUDITORÍA VISUAL
+            st.subheader("📊 Reporte de Auditoría")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Puentes Procesados", audit['puentes'])
+            m2.metric("Obras Procesadas", audit['obras'])
+            m3.metric("Rebotes Filtrados", audit['rebotes'])
+            
+            # Detalle de rebotes (Solo se muestra si hubo errores del operador)
+            if audit['rebotes'] > 0:
+                detalle = ", ".join([f"{cant} en '{letra}'" for letra, cant in audit['detalle_rebotes'].items()])
+                st.caption(f"🔍 Detalle de rebotes corregidos: {detalle}")
+            
+            if audit['alertas']:
+                for al in audit['alertas']:
+                    if "🔴" in al: st.error(al)
+                    else: st.warning(al)
+            else:
+                st.success("✅ Tramos lógicos consistentes. Sin alertas de desfase.")
+
+            # DESCARGAS
+            st.markdown("---")
+            col_d1, col_d2 = st.columns(2)
+            nb = arc.name.split('.')[0]
+            with col_d1:
+                st.download_button("⬇️ Descargar Crudo (SIG)", data=df_cru.to_csv(index=False).encode('utf-8'), file_name=f"{nb}_crudo.csv", mime='text/csv')
+            if df_agr is not None:
+                with col_d2:
+                    st.download_button(f"⬇️ Descargar Resumen ({int_rep}m)", data=df_agr.to_csv(index=False).encode('utf-8'), file_name=f"{nb}_resumen.csv", mime='text/csv')
