@@ -9,8 +9,10 @@ st.markdown("Carga masiva, auditoría de eventos y unificación de inventarios g
 def procesar_lote_streamlit(lista_archivos, ruta, sentido, intervalo_str, umbral_puntual, max_puente_m):
     lista_dfs = []
     audit = {'rebotes': 0, 'puentes': 0, 'obras': 0, 'alertas': [], 'detalle_rebotes': {}}
-    eventos_tramo = ['P', 'O']
-    eventos_puntuales = ['G', 'L', 'S', 'B']
+    
+    # EL CAMBIO CLAVE: 'O' pasa a ser puntual
+    eventos_tramo = ['P']
+    eventos_puntuales = ['G', 'L', 'S', 'B', 'O']
     eventos_objetivo = eventos_tramo + eventos_puntuales
 
     for arc in lista_archivos:
@@ -55,10 +57,14 @@ def procesar_lote_streamlit(lista_archivos, ruta, sentido, intervalo_str, umbral
             df_evt = pd.DataFrame(evt_ok)
         else: df_evt = df_evt_raw
 
+        # Auditoría de Obras
+        if not df_evt.empty:
+            audit['obras'] += df_evt[df_evt['Evento'] == 'O'].shape[0]
+
         df_f = pd.merge_asof(df_iri, df_gps, on='Progresiva', direction='nearest').drop_duplicates('Progresiva')
         df_f = pd.merge_asof(df_f, df_evt, on='Progresiva', direction='nearest', tolerance=0.01)
 
-        # 2. MÁQUINA DE ESTADOS
+        # 2. MÁQUINA DE ESTADOS (Solo Puentes)
         mask_t = pd.Series(False, index=df_f.index)
         limite_p_km = max_puente_m / 1000.0
         
@@ -78,9 +84,6 @@ def procesar_lote_streamlit(lista_archivos, ruta, sentido, intervalo_str, umbral
                         mask_t |= (df_f['Progresiva'] >= p_i) & (df_f['Progresiva'] <= p_a)
                         en_t = False
                         if tipo == 'P': audit['puentes'] += 1
-                        if tipo == 'O': 
-                            audit['obras'] += 1
-                            if dist > 2.0: audit['alertas'].append(f"[{nombre_arch}] ⚠️ Obra extensa ({dist:.2f} km) detectada.")
             if en_t:
                 fin = p_i + 0.030 if tipo == 'P' else df_f['Progresiva'].max()
                 mask_t |= (df_f['Progresiva'] >= p_i) & (df_f['Progresiva'] <= fin)
@@ -125,10 +128,8 @@ with st.form("form_main"):
         with col_a: umbral_rebote = st.number_input("Umbral Anti-rebote (m)", 0, 100, 30)
         with col_b: limite_puente = st.number_input("Límite max. Puente (m)", 100, 2000, 800)
 
-    # El botón que captura la acción de envío
     submit_btn = st.form_submit_button("Procesar y Unificar Datos")
 
-# Procesamiento y visualización (afuera del formulario)
 if submit_btn and arcs and rut:
     with st.spinner(f'Procesando {len(arcs)} archivos y unificando progresivas...'):
         df_cru, df_agr, audit = procesar_lote_streamlit(arcs, rut, sen, int_rep, umbral_rebote, limite_puente)
@@ -137,7 +138,7 @@ if submit_btn and arcs and rut:
             st.subheader(f"📊 Auditoría Global ({len(arcs)} Archivos)")
             m1, m2, m3 = st.columns(3)
             m1.metric("Puentes Totales", audit['puentes'])
-            m2.metric("Obras Totales", audit['obras'])
+            m2.metric("Marcas de Obra (O)", audit['obras'])
             m3.metric("Rebotes Filtrados", audit['rebotes'])
             
             if audit['rebotes'] > 0:
@@ -149,7 +150,7 @@ if submit_btn and arcs and rut:
                     if "🔴" in al: st.error(al)
                     else: st.warning(al)
             else:
-                st.success("✅ Todos los archivos procesados sin alertas de desfase.")
+                st.success("✅ Todos los archivos procesados sin alertas de desfase en puentes.")
 
             st.markdown("---")
             col_d1, col_d2 = st.columns(2)
